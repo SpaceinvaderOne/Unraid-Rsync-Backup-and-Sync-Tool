@@ -41,21 +41,21 @@ DEST_TYPE="local"               # 'local', 'remote', or 'both'. Defines where th
 
 # --- Remote Server Details (Ignored if DEST_TYPE = 'local') ---
 
-DEST_SERVER_IP="10.10.20.194"   # The IP address or hostname of the remote server change the example that is here.
+DEST_SERVER_IP="192.168.1.100"  # The IP address or hostname of the remote server.
 SSH_PORT=22                     # The SSH port of the remote server. 22 is standard.
 
 # --- Path Definitions ---
 
 # The folder(s) you want to back up.
 # Add more paths inside the parentheses, each on a new line and in quotes.
-# NOTE: Paths with spaces are fine. (The script handles trailing slashes automatically so dont worry about if they are present or not.)
+# NOTE: Paths with spaces are fine. The script handles trailing slashes automatically.
 SOURCE_PATHS=(
   "/mnt/user/source_test/source 1"
   "/mnt/user/source_test/source 2/"
 )
 
 # The destination folder for LOCAL archive backups (if DEST_TYPE is 'local' or 'both').
-ARCHIVE_DEST_LOCAL="/mnt/user/archive backups"
+ARCHIVE_DEST_LOCAL="/mnt/user/archive_backups"
 
 # The destination folder for REMOTE archive backups (if DEST_TYPE is 'remote' or 'both').
 ARCHIVE_DEST_REMOTE="/mnt/user/backups/archives"
@@ -64,7 +64,7 @@ ARCHIVE_DEST_REMOTE="/mnt/user/backups/archives"
 # IMPORTANT: The first source in SOURCE_PATHS syncs to the first destination here, the second to the second, and so on.
 DEST_PATHS=(
   "/mnt/user/sync_destination/dest 1"
-  "/mnt/user/sync_destionation/dest 2"
+  "/mnt/user/sync_destination/dest 2"
 )
 
 
@@ -84,11 +84,14 @@ DRY_RUN="no"                    # 'yes' or 'no'.
 
 # === END OF USER CONFIGURATION ===
 
+
 # === SCRIPT LOGIC (No need to edit below) ===
 
 # --- Normalisation and Setup ---
 NOW=$(date "+%Y-%m-%d_%H%M")
-SOURCE_SERVER_NAME="${CUSTOM_SERVER_NAME:-$(hostname)}"
+# Sanitize custom server name to prevent path manipulation, then set the final server name
+sanitized_custom_name=$(echo "$CUSTOM_SERVER_NAME" | sed 's|/||g')
+SOURCE_SERVER_NAME="${sanitized_custom_name:-$(hostname)}"
 LATEST_SYMLINK="latest"
 DELETED_FOLDER_BASE="deleted_from_sync"
 
@@ -136,7 +139,7 @@ validate_paths() {
       if [[ "${ALLOW_DEST_CREATION,,}" == "yes" ]]; then
         mkdir -p "$clean_archive_dest_local" || error_exit "Failed to create local archive destination: $clean_archive_dest_local"
       else
-        error_exit "Local archive destination $clean_archive_dest_local missing. Set ALLOW_DEST_CREATION=yes to auto-create."
+        error_exit "Local archive destination '$clean_archive_dest_local' missing. Set ALLOW_DEST_CREATION=yes to auto-create."
       fi
     fi
   fi
@@ -152,11 +155,12 @@ run_archive_mode() {
   if [[ "${DEST_TYPE,,}" == "remote" || "${DEST_TYPE,,}" == "both" ]]; then
     log "Processing remote archive..."
     local clean_archive_dest="${ARCHIVE_DEST_REMOTE%/}"
-    local base_path="$clean_archive__dest/$SOURCE_SERVER_NAME"
+    # CRITICAL FIX: Corrected typo from `clean_archive__dest` to `clean_archive_dest`
+    local base_path="$clean_archive_dest/$SOURCE_SERVER_NAME"
     local destination_path="$base_path/$NOW"
     local latest_path="$base_path/$LATEST_SYMLINK"
 
-    ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "mkdir -p '$destination_path'" || error_exit "Remote mkdir failed"
+    ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "mkdir -p '$destination_path'" || error_exit "Remote mkdir failed for '$destination_path'"
 
     for src in "${SOURCE_PATHS[@]}"; do
       local safe_name=$(make_safe_name "${src%/}")
@@ -180,7 +184,7 @@ run_archive_mode() {
     local destination_path="$base_path/$NOW"
     local latest_path="$base_path/$LATEST_SYMLINK"
 
-    mkdir -p "$destination_path"
+    mkdir -p "$destination_path" || error_exit "Failed to create local destination path: '$destination_path'"
 
     for src in "${SOURCE_PATHS[@]}"; do
       local safe_name=$(make_safe_name "${src%/}")
