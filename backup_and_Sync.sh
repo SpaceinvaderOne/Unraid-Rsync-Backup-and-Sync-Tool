@@ -1,222 +1,264 @@
-# Unraid Rsync Backup and Sync Tool
+#!/bin/bash
+# set -x # Uncomment for debugging only
 
-This script is a powerful and flexible backup tool for your Unraid server. It works with the **User Scripts** plugin to back up folders on your server. It supports versioned archives with hard linking, direct synchronization, and both local and remote destinations via SSH.
+# === START OF USER CONFIGURATION ===
+# --- Fill in your details below ---
 
----
+# --- General Settings ---
 
-## Requirements
+ENABLE_NOTIFICATIONS="yes"      # 'yes' or 'no'. Send a notification to Unraid on success or failure.
+                                # Requires notification agents to be set up in Unraid's GUI (Settings -> Notification Settings).
 
-- **Unraid server**  
-- **User Scripts plugin** (available in the Community Applications)  
-- For remote backups:
-  - SSH access between servers. This can be over local network or over Tailscale for offsite backups.
-  - SSH keys exchanged [(Click this link for a script to do this for you)](https://github.com/SpaceinvaderOne/Easy_Unraid_SSHKey_Exchange)
+CUSTOM_SERVER_NAME=""           # Optional. Leave blank to use this server's real hostname (e.g., "Tower").
+                                # Set a custom name here to change the top-level folder name for your archives, e.g., "MyMediaServer".
 
----
+# --- Primary Backup Strategy ---
 
-## Installation
+MODE="archive"                  # 'archive' or 'sync'. This is the most important setting.
+                                # 'archive': Creates a new, timestamped, versioned backup every time. Good for historical data.
+                                # 'sync':    Mirrors a source to a destination, making them identical. Good for a simple 1-to-1 copy.
 
-1. **Install the User Scripts plugin** if you haven’t already.  
-   Open the Unraid web UI and go to **Apps** → search for **User Scripts**, then install it.
+# --- Sync Mode Settings (These only apply if MODE = 'sync') ---
 
-2. **Create a new script** inside the User Scripts plugin.  
-   Give it a name like `my_backup`.
+STRICT_SYNC="no"                # This controls what happens to files that are deleted from your source folder.
+                                # 'no' (Safer): When a file is deleted from the source, it is MOVED to a 'deleted_from_sync' folder
+                                #               on the destination. You won't lose it by accident.
+                                # 'yes' (Riskier): When a file is deleted from the source, it is PERMANENTLY DELETED from the destination.
 
-3. **Paste the script** contents into the script editor.
+# --- Archive Mode Settings (These only apply if MODE = 'archive') ---
 
-4. **Edit the USER CONFIGURATION section** of the script to match your needs.  
-   This includes setting paths, mode, server type, etc.
+USE_HARDLINKS="yes"             # 'yes' or 'no'.
+                                # 'yes' (Recommended): Saves a huge amount of disk space. Unchanged files are "linked" to the previous backup
+                                # instead of being copied again. The backup still looks like a full copy.
+                                # 'no': Creates a full, complete copy of all files every time. Uses much more disk space.
 
-5. **Set a schedule** inside the User Scripts plugin for when this backup should run — daily, weekly, or however often you want.
+# --- Destination Settings ---
 
----
+DEST_TYPE="local"               # 'local', 'remote', or 'both'. Defines where the backup will be sent.
+                                # 'local':  Backs up to a folder on this same Unraid server.
+                                # 'remote': Backs up to another server using SSH.
+                                # 'both':   (Archive mode only) Backs up to both a local AND a remote destination.
 
-## How It Works
+# --- Remote Server Details (Ignored if DEST_TYPE = 'local') ---
 
-The script has two main modes:
+DEST_SERVER_IP="10.10.20.194"   # The IP address or hostname of the remote server change the example that is here.
+SSH_PORT=22                     # The SSH port of the remote server. 22 is standard.
 
-### 1. Archive Mode (`MODE="archive"`)
+# --- Path Definitions ---
 
-This mode creates a **timestamped backup** of your source folders. It stores each run as a new snapshot and can save disk space using **hardlinks** (if enabled).
-
-Each backup looks like a full copy of your files, but unchanged files are hardlinked from the previous run to save space.
-
-You can back up:
-- **Locally**, to a folder on the same Unraid server
-- **Remotely**, to another Unraid server via SSH
-- Or **both**, for redundancy
-
-Example archive destination structure:
-
-```
-/mnt/user/archive backups/MyServer/
-  ├── latest → 2025-07-01_1200
-  ├── 2025-06-30_1200/
-  ├── 2025-07-01_1200/
-```
-
-### 2. Sync Mode (`MODE="sync"`)
-
-This mode mirrors a folder from the source to the destination, making them identical.
-
-- If `STRICT_SYNC="yes"`, deleted files are removed from the destination.
-- If `STRICT_SYNC="no"` (recommended), deleted files are moved to a `deleted_from_sync` folder with a timestamp for safety.
-
-Example sync destination structure:
-
-```
-/mnt/user/sync_destination/dest 1/
-  ├── your files...
-  └── deleted_from_sync/
-        └── 2025-07-01_1200/
-```
-
----
-
-## Configuration Guide
-
-Open the script and edit the **USER CONFIGURATION** section at the top.
-
-Here are the most important settings:
-
-### General Settings
-
-```bash
-ENABLE_NOTIFICATIONS="yes"     # Show Unraid notifications on completion
-CUSTOM_SERVER_NAME=""          # Optional name override (default: hostname)
-```
-
-### Backup Mode
-
-```bash
-MODE="archive"                 # Options: 'archive' or 'sync'
-```
-
-### Sync Mode Only
-
-```bash
-STRICT_SYNC="no"               # Options: 'no' (safe) or 'yes' (more risky will delete files that are not in the source)
-```
-
-### Archive Mode Only
-
-```bash
-USE_HARDLINKS="yes"            # Saves space by linking unchanged files
-```
-
-### Destination Settings
-
-```bash
-DEST_TYPE="local"              # Options: 'local', 'remote', or 'both'  (both only works in archive mode)
-DEST_SERVER_IP="10.10.20.194"  # Remote server IP or hostname
-SSH_PORT=22                    # SSH port (usually 22)
-```
-
-### Source and Destination Paths
-
-```bash
+# The folder(s) you want to back up.
+# Add more paths inside the parentheses, each on a new line and in quotes.
+# NOTE: Paths with spaces are fine. (The script handles trailing slashes automatically so dont worry about if they are present or not.)
 SOURCE_PATHS=(
   "/mnt/user/source_test/source 1"
-  "/mnt/user/source_test/source 2"
+  "/mnt/user/source_test/source 2/"
 )
 
+# The destination folder for LOCAL archive backups (if DEST_TYPE is 'local' or 'both').
 ARCHIVE_DEST_LOCAL="/mnt/user/archive backups"
+
+# The destination folder for REMOTE archive backups (if DEST_TYPE is 'remote' or 'both').
 ARCHIVE_DEST_REMOTE="/mnt/user/backups/archives"
 
+# The destination folder(s) for 'sync' mode.
+# IMPORTANT: The first source in SOURCE_PATHS syncs to the first destination here, the second to the second, and so on.
 DEST_PATHS=(
   "/mnt/user/sync_destination/dest 1"
-  "/mnt/user/sync_destination/dest 2"
+  "/mnt/user/sync_destionation/dest 2"
 )
-```
-
-#### How to Use These
-
-Each path must be listed inside parentheses, one per line, and enclosed in double quotes.  
-This applies to both `SOURCE_PATHS` and `DEST_PATHS`.
-
-For example:
-- Two source folders = two quoted lines inside `SOURCE_PATHS`
-- Two destination folders = two quoted lines inside `DEST_PATHS`
-
-#### When Using Sync Mode
-
-If `MODE="sync"`, then `DEST_PATHS` is **required**.
-
-The script will sync each source folder to the destination at the **same position** in the list:
-- The first source goes to the first destination
-- The second source goes to the second destination
-- And so on
-
-If the number of destinations doesn't match the number of sources, the script will stop with an error.
-
-#### When Using Archive Mode
-
-`DEST_PATHS` is ignored in archive mode.
-
-Instead, you configure:
-- `ARCHIVE_DEST_LOCAL` — for local archive backups on the same Unraid server
-- `ARCHIVE_DEST_REMOTE` — for archive backups sent over SSH to a remote server
-
-If `DEST_TYPE="both"`, then both local and remote destinations will be used.  
-This provides redundancy by keeping versioned archives on both servers.
-
-The script will create a folder structure under each archive destination using the server name and a timestamp.  
-It also creates a `latest` symlink pointing to the most recent backup.
 
 
-### Advanced Settings
+# --- Advanced Settings ---
 
-```bash
-ALLOW_DEST_CREATION="no"      # Set to 'yes' to auto-create missing folders
-DRY_RUN="no"                  # Set to 'yes' to simulate the backup only
-```
+ALLOW_DEST_CREATION="no"        # 'no' or 'yes'.
+                                # 'no' (Safer Default): The script will stop with an error if a destination folder is missing.
+                                #                       This is recommended because it forces you to create the destination share yourself,
+                                #                       ensuring it has the correct Unraid settings (e.g., correct pool, cache settings, etc.).
+                                # 'yes': If a destination folder doesn't exist, the script will create it. BE CAREFUL: If the parent share
+                                #        doesn't exist, Unraid may create it with default settings, which might not be what you want.
 
-#### `ALLOW_DEST_CREATION`
+DRY_RUN="no"                    # 'yes' or 'no'.
+                                # 'yes': Simulates the backup and shows what files WOULD be copied/deleted, but makes NO actual changes.
+                                #        Perfect for testing your settings safely!
+                                # 'no': Performs the real backup.
 
-When set to `yes`, the script will automatically create any destination folders that are missing. This can be convenient, but use with caution:
+# === END OF USER CONFIGURATION ===
 
-- **Recommended setting: `no`**  
-  It's best to manually create your destination folders ahead of time using the Unraid web interface. This ensures that:
-  - The destination lives on the correct storage pool or the main array.
-  - You can configure share-level settings like cache usage, SMB/NFS export, or security.
-- If you let the script create a **top-level share** that doesn't already exist, Unraid may create it using default settings—which may not match your intended configuration.
-- It's generally safe to use `ALLOW_DEST_CREATION="yes"` for subfolders **within an existing share**, but not for creating new top-level shares.
+# === SCRIPT LOGIC (No need to edit below) ===
 
-#### `DRY_RUN`
+# --- Normalisation and Setup ---
+NOW=$(date "+%Y-%m-%d_%H%M")
+SOURCE_SERVER_NAME="${CUSTOM_SERVER_NAME:-$(hostname)}"
+LATEST_SYMLINK="latest"
+DELETED_FOLDER_BASE="deleted_from_sync"
 
-When set to `yes`, the script runs in **simulation mode**. No data will be copied, deleted, or modified. Instead, the script shows what actions *would* be taken. This is ideal for testing your configuration before allowing the script to perform real backups.
+# --- Core Functions ---
+log() { echo -e "[INFO] $1"; }
+error_exit() { echo -e "\n[ERROR] $1" >&2; notify_unraid "Backup Failed" "$1" "alert"; exit 1; }
 
----
+notify_unraid() {
+  # NOTE: For notifications to work, you must have agents configured and working
+  # in your Unraid GUI under Settings -> Notification Settings.
+  # Test them there first!
+  [[ "${ENABLE_NOTIFICATIONS,,}" == "yes" ]] || return
+  /usr/local/emhttp/webGui/scripts/notify -e "Backup Script" -s "$1" -d "$2" -i "$3"
+}
 
-## Scheduling the Script
+check_ssh_connection() {
+  if [[ "${DEST_TYPE,,}" == "remote" || "${DEST_TYPE,,}" == "both" ]]; then
+    log "Checking SSH connection to $DEST_SERVER_IP..."
+    ssh -p "$SSH_PORT" "$DEST_SERVER_IP" 'echo connected' 2>/dev/null || error_exit "SSH connection failed. Ensure SSH keys are exchanged and the server is reachable."
+  fi
+}
 
-Once your script is configured:
+validate_paths() {
+  log "Validating paths and settings..."
+  if [[ "${MODE,,}" == "sync" && "${#SOURCE_PATHS[@]}" -ne "${#DEST_PATHS[@]}" ]]; then
+    error_exit "Source and destination arrays must be the same length in sync mode."
+  fi
+  if [[ "${MODE,,}" == "sync" && "${DEST_TYPE,,}" == "both" ]]; then
+    error_exit "Cannot use DEST_TYPE=both with sync mode. Only allowed for archive mode."
+  fi
 
-1. Go to **User Scripts** in the Unraid GUI.
-2. Find your script and click **Schedule**.
-3. Choose when and how often it should run (e.g., every day).
+  if [ ${#SOURCE_PATHS[@]} -eq 0 ]; then
+    error_exit "No source paths defined. Nothing to back up."
+  fi
 
----
+  for src in "${SOURCE_PATHS[@]}"; do
+    if [[ ! -d "$src" ]]; then
+      error_exit "Source path does not exist: $src"
+    fi
+  done
 
-## Notes and Best Practices
+  if [[ "${MODE,,}" == "archive" && ( "${DEST_TYPE,,}" == "local" || "${DEST_TYPE,,}" == "both" ) ]]; then
+    local clean_archive_dest_local="${ARCHIVE_DEST_LOCAL%/}"
+    if [[ ! -d "$clean_archive_dest_local" ]]; then
+      if [[ "${ALLOW_DEST_CREATION,,}" == "yes" ]]; then
+        mkdir -p "$clean_archive_dest_local" || error_exit "Failed to create local archive destination: $clean_archive_dest_local"
+      else
+        error_exit "Local archive destination $clean_archive_dest_local missing. Set ALLOW_DEST_CREATION=yes to auto-create."
+      fi
+    fi
+  fi
+  log "All paths and settings are valid."
+}
 
-- Always test with `DRY_RUN="yes"` before running live for the first time.
-- For **remote backups**, make sure SSH keys are set up or it will not work.
-- Use `USE_HARDLINKS="yes"` to save space in archive mode (recommended).
-- Monitor `/mnt/user/deleted_from_sync` if you use `sync` mode with `STRICT_SYNC="no"` — this is where deleted files go for safekeeping.
+make_safe_name() {
+  echo "${1#/}" | sed 's|/|-|g'
+}
 
----
+run_archive_mode() {
+  # --- Remote Operations ---
+  if [[ "${DEST_TYPE,,}" == "remote" || "${DEST_TYPE,,}" == "both" ]]; then
+    log "Processing remote archive..."
+    local clean_archive_dest="${ARCHIVE_DEST_REMOTE%/}"
+    local base_path="$clean_archive__dest/$SOURCE_SERVER_NAME"
+    local destination_path="$base_path/$NOW"
+    local latest_path="$base_path/$LATEST_SYMLINK"
 
-## Troubleshooting
+    ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "mkdir -p '$destination_path'" || error_exit "Remote mkdir failed"
 
-If the script fails:
+    for src in "${SOURCE_PATHS[@]}"; do
+      local safe_name=$(make_safe_name "${src%/}")
+      local specific_link_dest="$latest_path/$safe_name"
+      local rsync_opts=(-a --no-whole-file)
+      [[ "${DRY_RUN,,}" == "yes" ]] && rsync_opts+=(--dry-run)
+      if [[ "${USE_HARDLINKS,,}" == "yes" ]] && ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "[ -d '$specific_link_dest' ]"; then
+          rsync_opts+=(--link-dest="$specific_link_dest")
+      fi
+      log "Archiving '$src' to remote..."
+      rsync "${rsync_opts[@]}" -e "ssh -p '$SSH_PORT'" "${src%/}/" "$DEST_SERVER_IP:$destination_path/$safe_name/" || error_exit "Archive failed for remote source: $src"
+    done
+    ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "ln -snf '$destination_path' '$latest_path'" || error_exit "Failed to update remote latest symlink"
+  fi
 
-- Check Unraid notifications (if enabled)
-- Uncommnet `# set -x` for detailed output to debug
- 
+  # --- Local Operations ---
+  if [[ "${DEST_TYPE,,}" == "local" || "${DEST_TYPE,,}" == "both" ]]; then
+    log "Processing local archive..."
+    local clean_archive_dest="${ARCHIVE_DEST_LOCAL%/}"
+    local base_path="$clean_archive_dest/$SOURCE_SERVER_NAME"
+    local destination_path="$base_path/$NOW"
+    local latest_path="$base_path/$LATEST_SYMLINK"
 
----
+    mkdir -p "$destination_path"
 
-## License
+    for src in "${SOURCE_PATHS[@]}"; do
+      local safe_name=$(make_safe_name "${src%/}")
+      local specific_link_dest="$latest_path/$safe_name"
+      local rsync_opts=(-a)
+      [[ "${DRY_RUN,,}" == "yes" ]] && rsync_opts+=(--dry-run)
+      if [[ "${USE_HARDLINKS,,}" == "yes" && -d "$specific_link_dest" ]]; then
+          rsync_opts+=(--link-dest="$specific_link_dest")
+      fi
+      log "Archiving '$src' to local..."
+      rsync "${rsync_opts[@]}" "${src%/}/" "$destination_path/$safe_name/" || error_exit "Archive failed for local source: $src"
+    done
+    ln -snf "$destination_path" "$latest_path" || error_exit "Failed to update local latest symlink"
+  fi
+}
 
-This script is free to use and modify. No warranty is provided.
+run_sync_mode() {
+  local timestamp_folder="$DELETED_FOLDER_BASE/$NOW"
+
+  for i in "${!SOURCE_PATHS[@]}"; do
+    local src="${SOURCE_PATHS[$i]%/}"
+    local dst="${DEST_PATHS[$i]%/}"
+    local full_backup_dir="$dst/$timestamp_folder"
+    local rsync_opts=(-a)
+    [[ "${DRY_RUN,,}" == "yes" ]] && rsync_opts+=(--dry-run)
+
+    if [[ "${STRICT_SYNC,,}" == "yes" ]]; then
+      rsync_opts+=(--delete)
+    else
+      rsync_opts+=(--delete --backup --backup-dir="$full_backup_dir" --filter="P $DELETED_FOLDER_BASE/")
+    fi
+
+    log "Syncing '$src' to '$dst'..."
+    if [[ "${DEST_TYPE,,}" == "remote" ]]; then
+      ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "mkdir -p '$dst'" || error_exit "Remote path create failed: $dst"
+      rsync "${rsync_opts[@]}" -e "ssh -p '$SSH_PORT'" "$src/" "$DEST_SERVER_IP:$dst/" || error_exit "Sync failed for $src -> $dst"
+    else
+      if [[ ! -d "$dst" ]]; then
+          if [[ "${ALLOW_DEST_CREATION,,}" == "yes" ]]; then
+              mkdir -p "$dst" || error_exit "Failed to create local destination: $dst"
+          else
+              error_exit "Destination path does not exist: $dst"
+          fi
+      fi
+      rsync "${rsync_opts[@]}" "$src/" "$dst/" || error_exit "Sync failed for $src -> $dst"
+      if [[ "${STRICT_SYNC,,}" == "no" && -d "$full_backup_dir" && -z "$(ls -A "$full_backup_dir" 2>/dev/null)" ]]; then
+        rmdir "$full_backup_dir" && rmdir "$(dirname "$full_backup_dir")" 2>/dev/null || true
+      fi
+    fi
+  done
+}
+
+# === Main flow ===
+main() {
+  echo "================================================="
+  log "Backup Script Started: $(date)"
+  log "Mode: ${MODE}, Destination: ${DEST_TYPE}"
+  echo "-------------------------------------------------"
+
+  check_ssh_connection
+  validate_paths
+
+  echo "-------------------------------------------------"
+  log "Starting main backup operation..."
+
+  if [[ "${MODE,,}" == "archive" ]]; then
+    run_archive_mode
+  elif [[ "${MODE,,}" == "sync" ]]; then
+    run_sync_mode
+  else
+    error_exit "Invalid MODE set. Use 'archive' or 'sync'."
+  fi
+
+  echo "-------------------------------------------------"
+  log "Backup script completed successfully."
+  echo "================================================="
+  notify_unraid "Backup Complete" "All tasks completed successfully." "normal"
+}
+
+# --- Run the script ---
+main
