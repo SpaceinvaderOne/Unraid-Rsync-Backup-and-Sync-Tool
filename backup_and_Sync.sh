@@ -82,10 +82,30 @@ DRY_RUN="no"                    # 'yes' or 'no'.
                                 #        Perfect for testing your settings safely!
                                 # 'no': Performs the real backup.
 
+BANDWIDTH_LIMIT=0               # Set a bandwidth limit in KB/s for remote transfers. 0 = unlimited.
+                                # This is useful for preventing rsync from saturating your network.
+                                # --- Internet Examples ---
+                                # Example for a 50 Mbps upload speed (limit to ~5 MB/s): BANDWIDTH_LIMIT=5000
+                                # Example for a 100 Mbps upload speed (limit to ~10 MB/s): BANDWIDTH_LIMIT=10000
+                                # --- Local LAN Examples (to leave headroom for other devices) ---
+                                # Example for a 1 Gbps LAN (limit to 100 MB/s): BANDWIDTH_LIMIT=100000
+                                # Example for a 2.5 Gbps LAN (limit to 250 MB/s): BANDWIDTH_LIMIT=250000
+                                # Example for a 10 Gbps LAN (limit to 800 MB/s): BANDWIDTH_LIMIT=800000
+
 # === END OF USER CONFIGURATION ===
 
 
 # === SCRIPT LOGIC (No need to edit below) ===
+
+# --- Lock File ---
+# This prevents the script from running more than once at the same time.
+LOCK_FILE="/tmp/$(basename "$0").lock"
+if [ -e "$LOCK_FILE" ]; then
+    echo "Script is already running. Exiting."
+    exit 1
+fi
+trap 'rm -f "$LOCK_FILE"' EXIT
+touch "$LOCK_FILE"
 
 # --- Normalisation and Setup ---
 NOW=$(date "+%Y-%m-%d_%H%M")
@@ -155,7 +175,6 @@ run_archive_mode() {
   if [[ "${DEST_TYPE,,}" == "remote" || "${DEST_TYPE,,}" == "both" ]]; then
     log "Processing remote archive..."
     local clean_archive_dest="${ARCHIVE_DEST_REMOTE%/}"
-    # CRITICAL FIX: Corrected typo from `clean_archive__dest` to `clean_archive_dest`
     local base_path="$clean_archive_dest/$SOURCE_SERVER_NAME"
     local destination_path="$base_path/$NOW"
     local latest_path="$base_path/$LATEST_SYMLINK"
@@ -167,6 +186,9 @@ run_archive_mode() {
       local specific_link_dest="$latest_path/$safe_name"
       local rsync_opts=(-a --no-whole-file)
       [[ "${DRY_RUN,,}" == "yes" ]] && rsync_opts+=(--dry-run)
+      if [[ "$BANDWIDTH_LIMIT" -gt 0 ]]; then
+          rsync_opts+=(--bwlimit="$BANDWIDTH_LIMIT")
+      fi
       if [[ "${USE_HARDLINKS,,}" == "yes" ]] && ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "[ -d '$specific_link_dest' ]"; then
           rsync_opts+=(--link-dest="$specific_link_dest")
       fi
@@ -219,6 +241,9 @@ run_sync_mode() {
 
     log "Syncing '$src' to '$dst'..."
     if [[ "${DEST_TYPE,,}" == "remote" ]]; then
+      if [[ "$BANDWIDTH_LIMIT" -gt 0 ]]; then
+          rsync_opts+=(--bwlimit="$BANDWIDTH_LIMIT")
+      fi
       ssh -p "$SSH_PORT" "$DEST_SERVER_IP" "mkdir -p '$dst'" || error_exit "Remote path create failed: $dst"
       rsync "${rsync_opts[@]}" -e "ssh -p '$SSH_PORT'" "$src/" "$DEST_SERVER_IP:$dst/" || error_exit "Sync failed for $src -> $dst"
     else
@@ -226,7 +251,7 @@ run_sync_mode() {
           if [[ "${ALLOW_DEST_CREATION,,}" == "yes" ]]; then
               mkdir -p "$dst" || error_exit "Failed to create local destination: $dst"
           else
-              error_exit "Destination path does not exist: $dst"
+              error_exit "Destination path '$dst' does not exist. Set ALLOW_DEST_CREATION=yes to auto-create."
           fi
       fi
       rsync "${rsync_opts[@]}" "$src/" "$dst/" || error_exit "Sync failed for $src -> $dst"
